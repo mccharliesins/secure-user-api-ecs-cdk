@@ -1,0 +1,44 @@
+version: 0.2
+
+phases:
+  pre_build:
+    commands:
+      # login to ecr
+      - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $REPOSITORY_URI
+      # set image tag
+      - COMMIT_HASH=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c 1-7)
+      - IMAGE_TAG=${COMMIT_HASH:=latest}
+  build:
+    commands:
+      # build docker image
+      - cd app
+      - docker build -t $REPOSITORY_URI:latest .
+      - docker tag $REPOSITORY_URI:latest $REPOSITORY_URI:$IMAGE_TAG
+  post_build:
+    commands:
+      # push image to ecr
+      - docker push $REPOSITORY_URI:latest
+      - docker push $REPOSITORY_URI:$IMAGE_TAG
+      
+      - cd ..
+      # generate imagedefinitions.json
+      - printf '[{"name":"%s","imageUri":"%s"}]' "$CONTAINER_NAME" "$REPOSITORY_URI:$IMAGE_TAG" > imagedefinitions.json
+      
+      # generate appspec.yaml for codedeploy
+      - |
+        cat > appspec.yaml <<EOF
+        version: 0.0
+        Resources:
+          - TargetService:
+              Type: AWS::ECS::Service
+              Properties:
+                TaskDefinition: <TASK_DEFINITION>
+                LoadBalancerInfo:
+                  ContainerName: "$CONTAINER_NAME"
+                  ContainerPort: $CONTAINER_PORT
+        EOF
+
+artifacts:
+  files:
+    - appspec.yaml
+    - imagedefinitions.json
